@@ -14,7 +14,7 @@ import (
 // Streamer implements Stream which returns a new EnvelopeStream for the given context and request.
 type Streamer interface {
 	// EnvelopeStream returns batches of envelopes.
-	Stream(ctx context.Context, req *loggregator_v2.EgressBatchRequest) loggregator.EnvelopeStream
+	Stream(ctx context.Context, es chan []*loggregator_v2.Envelope, req *loggregator_v2.EgressBatchRequest) loggregator.EnvelopeStream
 }
 
 // V2Adapter struct with field of type streamer
@@ -34,7 +34,8 @@ func (a V2Adapter) Firehose(config *FirehoseConfig) chan *events.Envelope {
 	ctx := context.Background()
 	var v1msgs = make(chan *events.Envelope, 10000)
 	var v2msgs = make(chan *loggregator_v2.Envelope, 10000)
-	es := a.streamer.Stream(ctx, &loggregator_v2.EgressBatchRequest{
+	var es = make(chan []*loggregator_v2.Envelope, 10000)
+	a.streamer.Stream(ctx, es, &loggregator_v2.EgressBatchRequest{
 		ShardId: config.SubscriptionID,
 		Selectors: []*loggregator_v2.Selector{
 			{
@@ -66,18 +67,10 @@ func (a V2Adapter) Firehose(config *FirehoseConfig) chan *events.Envelope {
 	})
 
 	go func() {
-		for ctx.Err() == nil {
-			for _, e := range es() {
-				v2msgs <- e
-			}
-		}
-	}()
-
-	go func() {
-		var receivedCount uint64 = 0
-
 		if config.StatusMonitorInterval > time.Second*0 {
+			var receivedCount uint64 = 0
 			timer := time.NewTimer(config.StatusMonitorInterval)
+
 			for ctx.Err() == nil {
 				select {
 				case <-timer.C:
@@ -86,23 +79,28 @@ func (a V2Adapter) Firehose(config *FirehoseConfig) chan *events.Envelope {
 					timer.Reset(config.StatusMonitorInterval)
 					receivedCount = 0
 				default:
-				}
-				select {
-				case e := <-v2msgs:
-					atomic.AddUint64(&receivedCount, 1)
-					//// ToV1 converts v2 envelopes down to v1 envelopes.
-					for _, v1e := range conversion.ToV1(e) {
-						v1msgs <- v1e
+					v2array := <-es
+					atomic.AddUint64(&receivedCount, uint64(len(v2array)))
+					for _, s := range v2array {
+						v2msgs <- s
 					}
-				default:
 				}
 			}
 		} else {
 			for ctx.Err() == nil {
-				e := <-v2msgs
-				for _, v1e := range conversion.ToV1(e) {
-					v1msgs <- v1e
+				v2array := <-es
+				for _, s := range v2array {
+					v2msgs <- s
 				}
+			}
+		}
+	}()
+
+	go func() {
+		for ctx.Err() == nil {
+			e := <-v2msgs
+			for _, v1e := range conversion.ToV1(e) {
+				v1msgs <- v1e
 			}
 		}
 	}()

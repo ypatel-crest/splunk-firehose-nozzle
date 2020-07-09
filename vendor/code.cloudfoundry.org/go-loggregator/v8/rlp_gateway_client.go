@@ -91,8 +91,7 @@ type Doer interface {
 // lifecycle of the EnvelopeStream is managed by the given context. If the
 // underlying SSE stream dies, it attempts to reconnect until the context
 // is done. Any errors are logged via the client's logger.
-func (c *RLPGatewayClient) Stream(ctx context.Context, req *loggregator_v2.EgressBatchRequest) EnvelopeStream {
-	es := make(chan []*loggregator_v2.Envelope, 100)
+func (c *RLPGatewayClient) Stream(ctx context.Context, es chan []*loggregator_v2.Envelope, req *loggregator_v2.EgressBatchRequest) EnvelopeStream {
 	go c.connectToStream(es, ctx, req)()
 	return streamEnvelopes(ctx, es)
 }
